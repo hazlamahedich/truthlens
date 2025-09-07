@@ -1,13 +1,18 @@
 {
-  "functions": {
-    "api/main.py": {
-      "runtime": "vercel-python@3.0.0"
-    }
-  },
-  "routes": [
+  "builds": [
     {
-      "src": "/api/(.*)",
-      "dest": "api/main.py"
+      "src": "apps/web/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "build" }
+    },
+    {
+      "src": "apps/api/main.py",
+      "use": "@vercel/python"
     }
+  ],
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/apps/api/main.py" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/apps/web/build/index.html" }
   ]
 }
