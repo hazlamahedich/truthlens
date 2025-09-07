@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "apps/web/package.json",
+      "use": "@vercel/next",
+      "config": {
+        "projectSettings": {
+          "framework": "nextjs",
+          "devCommand": "npm run dev",
+          "buildCommand": "npm run build",
+          "outputDirectory": ".next"
+        }
+      }
+    },
+    {
+      "src": "apps/api/**/*.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "apps/api/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "apps/web/$1"
+    }
+  ],
+  "env": {
+    "NEWSAPI_KEY": "@newsapi_key",
+    "GEMINI_API_KEY": "@gemini_api_key",
+    "ENABLE_REAL_SUMMARIZATION": "true",
+    "ENABLE_REAL_VERIFICATION": "false",
+    "NODE_ENV": "production"
+  },
+  "functions": {
+    "apps/api/**/*.py": {
+      "runtime": "python3.11"
+    }
+  }
+}
