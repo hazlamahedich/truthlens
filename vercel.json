@@ -1,23 +1,5 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "apps/web/package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "installCommand": "npm install",
-        "buildCommand": "npm run build",
-        "outputDir": "build"
-      }
-    },
-    {
-      "src": "apps/api/main.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    { "src": "/api/(.*)", "dest": "apps/api/main.py" },
-    { "src": "/static/(.*)", "dest": "apps/web/build/static/$1" },
-    { "src": "/(.*)", "dest": "apps/web/build/index.html" }
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/main" }
   ]
 }
