@@ -1,0 +1,39 @@
+schema: 1
+story: '1.4'
+story_title: 'Activate the Query'
+gate: CONCERNS
+status_reason: 'The story is functionally complete, but lacks automated tests for both frontend and backend components.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-09-07T00:00:00Z'
+
+waiver: { active: false }
+
+top_issues:
+  - id: "TEST-001"
+    severity: high
+    finding: "Missing automated frontend unit tests."
+    suggested_action: "Implement Vitest/React Testing Library tests for the UI components."
+  - id: "TEST-002"
+    severity: high
+    finding: "Missing automated backend unit tests."
+    suggested_action: "Implement Pytest tests for the FastAPI endpoint."
+  - id: "TEST-003"
+    severity: medium
+    finding: "Missing E2E tests."
+    suggested_action: "Implement Playwright tests for the end-to-end flow."
+
+nfr_validation:
+  security: { status: PASS, notes: "" }
+  performance: { status: PASS, notes: "" }
+  reliability: { status: PASS, notes: "" }
+  maintainability: { status: CONCERNS, notes: "Lack of tests impacts maintainability." }
+
+recommendations:
+  immediate:
+    - action: "Implement frontend unit tests."
+      refs: ["apps/web/src/app/page.tsx"]
+    - action: "Implement backend unit tests."
+      refs: ["apps/api/query.py"]
+  future:
+    - action: "Implement E2E tests."
+      refs: []

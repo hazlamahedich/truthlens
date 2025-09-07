@@ -1,0 +1,21 @@
+schema: 1
+story: '1.4'
+story_title: 'Activate the Query'
+gate: PASS
+status_reason: 'The developer has addressed all QA concerns, including implementing E2E tests.'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-09-07T00:00:00Z'
+
+waiver: { active: false }
+
+top_issues: []
+
+nfr_validation:
+  security: { status: PASS, notes: "" }
+  performance: { status: PASS, notes: "" }
+  reliability: { status: PASS, notes: "E2E tests implemented." }
+  maintainability: { status: PASS, notes: "" }
+
+recommendations:
+  immediate: []
+  future: []
