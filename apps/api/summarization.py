@@ -1,12 +1,14 @@
 """
 Summarization Agent for TruthLens
 Generates AI-powered summaries using LLM integration with feature flag support
+Enhanced with multi-perspective debate format capability
 """
 
 import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
@@ -26,7 +28,7 @@ class LLMConfig:
         self.gemini_base_url = "https://generativelanguage.googleapis.com/v1beta/models"
         self.model = "gemini-1.5-flash"
         self.timeout = 12  # seconds (within 15s requirement)
-        self.max_output_tokens = 1500
+        self.max_output_tokens = 2500  # Increased from 1500 for debate format
         self.temperature = 0.7
         
     def is_configured(self) -> bool:
@@ -38,7 +40,7 @@ class PromptTemplates:
     """Prompt templates for different summary formats"""
     
     @staticmethod
-    def debate_format(query: str, articles: List[Dict]) -> str:
+    def debate_format(query: str, articles: List[Dict], use_enhanced: bool = False) -> str:
         """Generate prompt for debate format summary"""
         articles_text = ""
         for i, article in enumerate(articles[:5], 1):  # Limit to 5 articles for token management
@@ -46,7 +48,60 @@ class PromptTemplates:
             articles_text += f"   URL: {article.get('url', 'No URL')}\n"
             articles_text += f"   Content: {article.get('description', 'No description')[:200]}...\n"
         
-        return f"""
+        if use_enhanced:
+            # Enhanced multi-perspective debate format
+            return f"""
+Analyze these news articles about "{query}" and create a multi-perspective debate summary.
+
+Articles:
+{articles_text}
+
+Generate a JSON response with 2-3 distinct perspectives. Each perspective should represent a different viewpoint found in the articles.
+
+EXACT FORMAT REQUIRED:
+{{
+  "topic": "{query}",
+  "perspectives": [
+    {{
+      "viewpoint": "Name/label for this perspective (e.g., 'Economic Growth Advocates')",
+      "position": "Main thesis in 100 chars",
+      "support_level": 0.0,
+      "arguments": [
+        {{
+          "point": "Specific argument under 150 chars",
+          "source_indices": [0, 1],
+          "strength": "strong"
+        }}
+      ]
+    }}
+  ],
+  "consensus_points": [
+    {{
+      "point": "Area of agreement under 100 chars",
+      "source_indices": [0, 1, 2]
+    }}
+  ],
+  "disputed_points": [
+    {{
+      "point": "Area of disagreement under 100 chars",
+      "perspectives_involved": ["Viewpoint A name", "Viewpoint B name"]
+    }}
+  ]
+}}
+
+Requirements:
+- Find 2-3 distinct perspectives from the articles
+- Each perspective needs 2-3 arguments with source attribution
+- support_level should be 0.0 to 1.0 based on source count supporting this perspective
+- strength should be "strong", "moderate", or "weak"
+- Use source_indices (0-based) to reference the article list
+- Identify at least 1 consensus point and 1 disputed point
+- Keep all text concise (character limits specified)
+- Return ONLY valid JSON, no additional text
+"""
+        else:
+            # Original simple debate format for backward compatibility
+            return f"""
 Analyze the following news articles about "{query}" and create a balanced debate summary.
 
 Articles:
@@ -311,6 +366,7 @@ class SummarizationAgent:
         self.client = LLMClient(self.config)
         self.templates = PromptTemplates()
         self._is_enabled = self._check_feature_flag()
+        self._debate_format_enabled = self._check_debate_format_flag()
     
     def _check_feature_flag(self) -> bool:
         """Check if real LLM summarization is enabled"""
@@ -319,6 +375,87 @@ class SummarizationAgent:
         logger.info(f"Real summarization feature flag: {'enabled' if enabled else 'disabled'}")
         return enabled
     
+    def _check_debate_format_flag(self) -> bool:
+        """Check if enhanced debate format is enabled"""
+        flag_value = os.getenv("ENABLE_DEBATE_FORMAT", "false").lower()
+        enabled = flag_value in ("true", "1", "yes", "on")
+        logger.info(f"Enhanced debate format feature flag: {'enabled' if enabled else 'disabled'}")
+        return enabled
+    
+    def _validate_input(self, articles: List[Dict[str, Any]], format_type: str) -> None:
+        """Validate input parameters for security"""
+        # Validate articles structure
+        if not isinstance(articles, list):
+            raise HTTPException(status_code=400, detail="Articles must be a list")
+        
+        # Validate format type
+        if format_type not in ["debate", "venn_diagram"]:
+            raise HTTPException(status_code=400, detail="Invalid format type. Must be 'debate' or 'venn_diagram'")
+        
+        # Validate article structure and content
+        for i, article in enumerate(articles):
+            if not isinstance(article, dict):
+                raise HTTPException(status_code=400, detail=f"Article {i} must be a dictionary")
+            
+            # Check for required fields and validate content
+            title = article.get("title", "")
+            url = article.get("url", "")
+            description = article.get("description", "")
+            
+            # Basic input sanitization - check for excessive length
+            if len(str(title)) > 500:
+                raise HTTPException(status_code=400, detail=f"Article {i} title too long")
+            if len(str(url)) > 1000:
+                raise HTTPException(status_code=400, detail=f"Article {i} URL too long")
+            if len(str(description)) > 5000:
+                raise HTTPException(status_code=400, detail=f"Article {i} description too long")
+    
+    def _validate_output(self, content: Dict[str, Any], format_type: str) -> bool:
+        """Validate output structure and content for security"""
+        try:
+            if format_type == "debate":
+                if self._debate_format_enabled:
+                    # Validate enhanced debate format
+                    required_fields = ["topic", "perspectives", "consensus_points", "disputed_points"]
+                    for field in required_fields:
+                        if field not in content:
+                            logger.warning(f"Missing required field in enhanced debate format: {field}")
+                            return False
+                    
+                    # Validate perspectives structure
+                    perspectives = content.get("perspectives", [])
+                    if not isinstance(perspectives, list) or len(perspectives) < 1:
+                        logger.warning("Invalid perspectives structure in enhanced debate format")
+                        return False
+                    
+                    for perspective in perspectives:
+                        if not isinstance(perspective, dict):
+                            return False
+                        required_perspective_fields = ["viewpoint", "position", "support_level", "arguments"]
+                        for field in required_perspective_fields:
+                            if field not in perspective:
+                                return False
+                else:
+                    # Validate simple debate format
+                    required_fields = ["statement", "for", "against"]
+                    for field in required_fields:
+                        if field not in content:
+                            logger.warning(f"Missing required field in simple debate format: {field}")
+                            return False
+            
+            elif format_type == "venn_diagram":
+                required_fields = ["topic_a", "topic_b", "unique_a", "unique_b", "common"]
+                for field in required_fields:
+                    if field not in content:
+                        logger.warning(f"Missing required field in venn diagram format: {field}")
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Output validation error: {e}")
+            return False
+    
     async def summarize_articles(
         self, 
         articles: List[Dict[str, Any]], 
@@ -326,6 +463,7 @@ class SummarizationAgent:
     ) -> Dict[str, Any]:
         """
         Generate summary from articles using LLM or fallback to mock
+        Enhanced with multi-perspective debate format capability
         
         Args:
             articles: List of article dictionaries with title, url, description
@@ -334,7 +472,11 @@ class SummarizationAgent:
         Returns:
             Summary dictionary matching the Summary data model
         """
+        start_time = time.time()  # Performance monitoring
         logger.info(f"Summarizing {len(articles)} articles in {format_type} format")
+        
+        # Input validation for security
+        self._validate_input(articles, format_type)
         
         # Handle empty articles
         if not articles:
@@ -355,6 +497,16 @@ class SummarizationAgent:
                 # Use mock summarization as fallback
                 content = self._generate_mock_summary(articles, format_type)
             
+            # Validate output structure
+            if not self._validate_output(content, format_type):
+                logger.warning("Output validation failed, falling back to mock")
+                content = self._generate_mock_summary(articles, format_type)
+            
+            # Log performance metrics
+            end_time = time.time()
+            response_time = end_time - start_time
+            logger.info(f"Summarization completed in {response_time:.2f}s for {len(articles)} articles")
+            
             return {
                 "format": format_type,
                 "content": content,
@@ -364,6 +516,10 @@ class SummarizationAgent:
         except Exception as e:
             logger.error(f"Summarization error: {str(e)}")
             # Fallback to mock on any error
+            end_time = time.time()
+            response_time = end_time - start_time
+            logger.info(f"Summarization fallback completed in {response_time:.2f}s")
+            
             return {
                 "format": format_type,
                 "content": self._generate_mock_summary(articles, format_type),
@@ -374,11 +530,22 @@ class SummarizationAgent:
         """Generate summary using real LLM API"""
         query = "news analysis"  # Default query - could be passed as parameter
         
-        # Generate appropriate prompt
+        # TODO: Future caching implementation for Epic 3/4
+        # Consider Redis or in-memory cache for common queries to improve response times
+        # Cache key could be hash of articles + format_type + feature flags
+        # Cache TTL should consider news freshness requirements
+        
+        # Generate appropriate prompt based on format and feature flags
         if format_type == "venn_diagram":
             prompt = self.templates.venn_diagram_format(query, articles)
         else:
-            prompt = self.templates.debate_format(query, articles)
+            # Use enhanced debate format if flag is enabled
+            use_enhanced = self._debate_format_enabled
+            prompt = self.templates.debate_format(query, articles, use_enhanced)
+        
+        # Token counting for monitoring (basic estimate)
+        prompt_token_estimate = len(prompt.split()) * 1.3  # Rough estimate
+        logger.info(f"Estimated prompt tokens: {prompt_token_estimate:.0f}, max output: {self.config.max_output_tokens}")
         
         # Call LLM API with proper session management
         try:
@@ -448,20 +615,70 @@ class SummarizationAgent:
                 ]
             }
         else:
-            # Debate format (default)
-            return {
-                "statement": f"Analysis based on {len(articles)} news sources",
-                "for": [
-                    "Supporting argument based on retrieved articles",
-                    "Additional evidence from news sources",
-                    "Further supporting perspective"
-                ],
-                "against": [
-                    "Alternative viewpoint from articles", 
-                    "Counter-evidence from sources",
-                    "Contrasting perspective presented"
-                ]
-            }
+            # Debate format - check if enhanced format is enabled
+            if self._debate_format_enabled:
+                # Enhanced multi-perspective mock format
+                return {
+                    "topic": f"Analysis of {len(articles)} news sources",
+                    "perspectives": [
+                        {
+                            "viewpoint": "Supporting Perspective", 
+                            "position": "Positive stance based on available sources",
+                            "support_level": 0.6,
+                            "arguments": [
+                                {
+                                    "point": "Evidence supports this viewpoint from multiple sources",
+                                    "source_indices": list(range(min(len(articles), 3))),
+                                    "strength": "strong"
+                                },
+                                {
+                                    "point": "Additional supporting evidence found", 
+                                    "source_indices": list(range(min(1, len(articles)), min(len(articles), 4))),
+                                    "strength": "moderate"
+                                }
+                            ]
+                        },
+                        {
+                            "viewpoint": "Alternative Perspective",
+                            "position": "Different stance highlighting opposing views", 
+                            "support_level": 0.4,
+                            "arguments": [
+                                {
+                                    "point": "Counter-evidence presents different angle",
+                                    "source_indices": list(range(min(2, len(articles)), min(len(articles), 5))),
+                                    "strength": "moderate"
+                                }
+                            ]
+                        }
+                    ],
+                    "consensus_points": [
+                        {
+                            "point": "General agreement on factual baseline",
+                            "source_indices": list(range(min(len(articles), 3)))
+                        }
+                    ],
+                    "disputed_points": [
+                        {
+                            "point": "Interpretation of implications varies",
+                            "perspectives_involved": ["Supporting Perspective", "Alternative Perspective"]
+                        }
+                    ]
+                }
+            else:
+                # Original simple debate format for backward compatibility
+                return {
+                    "statement": f"Analysis based on {len(articles)} news sources",
+                    "for": [
+                        "Supporting argument based on retrieved articles",
+                        "Additional evidence from news sources",
+                        "Further supporting perspective"
+                    ],
+                    "against": [
+                        "Alternative viewpoint from articles", 
+                        "Counter-evidence from sources",
+                        "Contrasting perspective presented"
+                    ]
+                }
     
     def _empty_content(self, format_type: str) -> Dict[str, Any]:
         """Generate content structure for empty articles"""
@@ -474,11 +691,45 @@ class SummarizationAgent:
                 "common": ["No common information available"]
             }
         else:
-            return {
-                "statement": "No articles found for analysis",
-                "for": ["No supporting arguments available"],
-                "against": ["No opposing arguments available"]
-            }
+            # Debate format - handle both simple and enhanced
+            if self._debate_format_enabled:
+                # Enhanced multi-perspective format for empty articles
+                return {
+                    "topic": "No articles found for analysis",
+                    "perspectives": [
+                        {
+                            "viewpoint": "No Data Available",
+                            "position": "Cannot analyze without articles",
+                            "support_level": 0.0,
+                            "arguments": [
+                                {
+                                    "point": "No supporting information available",
+                                    "source_indices": [],
+                                    "strength": "weak"
+                                }
+                            ]
+                        }
+                    ],
+                    "consensus_points": [
+                        {
+                            "point": "No consensus can be determined without sources",
+                            "source_indices": []
+                        }
+                    ],
+                    "disputed_points": [
+                        {
+                            "point": "No disputes identified without data",
+                            "perspectives_involved": []
+                        }
+                    ]
+                }
+            else:
+                # Original simple format
+                return {
+                    "statement": "No articles found for analysis",
+                    "for": ["No supporting arguments available"],
+                    "against": ["No opposing arguments available"]
+                }
     
     def _articles_to_sources(self, articles: List[Dict]) -> List[Dict[str, Any]]:
         """Convert article format to Source data model format"""
